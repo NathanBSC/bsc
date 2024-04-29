@@ -10,6 +10,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/params"
 
+	"github.com/ethereum/go-ethereum/core/systemcontracts/bohr"
 	"github.com/ethereum/go-ethereum/core/systemcontracts/bruno"
 	"github.com/ethereum/go-ethereum/core/systemcontracts/euler"
 	"github.com/ethereum/go-ethereum/core/systemcontracts/feynman"
@@ -75,6 +76,8 @@ var (
 	feynmanUpgrade = make(map[string]*Upgrade)
 
 	feynmanFixUpgrade = make(map[string]*Upgrade)
+
+	bohrUpgrade = make(map[string]*Upgrade)
 )
 
 func init() {
@@ -701,6 +704,17 @@ func init() {
 			},
 		},
 	}
+
+	bohrUpgrade[rialtoNet] = &Upgrade{
+		UpgradeName: "bohr",
+		Configs: []*UpgradeConfig{
+			{
+				ContractAddr: common.HexToAddress(ValidatorContract),
+				CommitUrl:    "https://github.com/NathanBSC/bsc-genesis-contract/commit/a977759455de71f40a3c86943205121f6efc1b71",
+				Code:         bohr.RialtoValidatorContract,
+			},
+		},
+	}
 }
 
 func UpgradeBuildInSystemContract(config *params.ChainConfig, blockNumber *big.Int, lastBlockTime uint64, blockTime uint64, statedb *state.StateDB) {
@@ -775,6 +789,10 @@ func UpgradeBuildInSystemContract(config *params.ChainConfig, blockNumber *big.I
 
 	if config.IsOnFeynmanFix(blockNumber, lastBlockTime, blockTime) {
 		applySystemContractUpgrade(feynmanFixUpgrade[network], blockNumber, statedb, logger)
+	}
+
+	if config.IsOnBohr(blockNumber, lastBlockTime, blockTime) {
+		applySystemContractUpgrade(bohrUpgrade[network], blockNumber, statedb, logger)
 	}
 
 	/*

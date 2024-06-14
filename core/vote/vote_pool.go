@@ -24,7 +24,7 @@ const (
 	lowerLimitOfVoteBlockNumber = 256
 	upperLimitOfVoteBlockNumber = 11 // refer to fetcher.maxUncleDist
 
-	chainHeadChanSize = 10 // chainHeadChanSize is the size of channel listening to ChainHeadEvent.
+	chainHeadHeaderVerifiedChanSize = 10 // chainHeadHeaderVerifiedChanSize is the size of channel listening to ChainHeadHeaderVerifiedEvent.
 )
 
 var (
@@ -57,8 +57,8 @@ type VotePool struct {
 	curVotesPq    *votesPriorityQueue
 	futureVotesPq *votesPriorityQueue
 
-	chainHeadCh  chan core.ChainHeadEvent
-	chainHeadSub event.Subscription
+	chainHeadHeaderVerifiedCh  chan core.ChainHeadHeaderVerifiedEvent
+	chainHeadHeaderVerifiedSub event.Subscription
 
 	votesCh chan *types.VoteEnvelope
 
@@ -69,19 +69,19 @@ type votesPriorityQueue []*types.VoteData
 
 func NewVotePool(chain *core.BlockChain, engine consensus.PoSA) *VotePool {
 	votePool := &VotePool{
-		chain:         chain,
-		receivedVotes: mapset.NewSet[common.Hash](),
-		curVotes:      make(map[common.Hash]*VoteBox),
-		futureVotes:   make(map[common.Hash]*VoteBox),
-		curVotesPq:    &votesPriorityQueue{},
-		futureVotesPq: &votesPriorityQueue{},
-		chainHeadCh:   make(chan core.ChainHeadEvent, chainHeadChanSize),
-		votesCh:       make(chan *types.VoteEnvelope, voteBufferForPut),
-		engine:        engine,
+		chain:                     chain,
+		receivedVotes:             mapset.NewSet[common.Hash](),
+		curVotes:                  make(map[common.Hash]*VoteBox),
+		futureVotes:               make(map[common.Hash]*VoteBox),
+		curVotesPq:                &votesPriorityQueue{},
+		futureVotesPq:             &votesPriorityQueue{},
+		chainHeadHeaderVerifiedCh: make(chan core.ChainHeadHeaderVerifiedEvent, chainHeadHeaderVerifiedChanSize),
+		votesCh:                   make(chan *types.VoteEnvelope, voteBufferForPut),
+		engine:                    engine,
 	}
 
 	// Subscribe events from blockchain and start the main event loop.
-	votePool.chainHeadSub = votePool.chain.SubscribeChainHeadEvent(votePool.chainHeadCh)
+	votePool.chainHeadHeaderVerifiedSub = votePool.chain.SubscribeChainHeadHeaderVerifiedEvent(votePool.chainHeadHeaderVerifiedCh)
 
 	go votePool.loop()
 	return votePool
@@ -89,18 +89,18 @@ func NewVotePool(chain *core.BlockChain, engine consensus.PoSA) *VotePool {
 
 // loop is the vote pool's main even loop, waiting for and reacting to outside blockchain events and votes channel event.
 func (pool *VotePool) loop() {
-	defer pool.chainHeadSub.Unsubscribe()
+	defer pool.chainHeadHeaderVerifiedSub.Unsubscribe()
 
 	for {
 		select {
 		// Handle ChainHeadEvent.
-		case ev := <-pool.chainHeadCh:
+		case ev := <-pool.chainHeadHeaderVerifiedCh:
 			if ev.Block != nil {
 				latestBlockNumber := ev.Block.NumberU64()
 				pool.prune(latestBlockNumber)
 				pool.transferVotesFromFutureToCur(ev.Block.Header())
 			}
-		case <-pool.chainHeadSub.Err():
+		case <-pool.chainHeadHeaderVerifiedSub.Err():
 			return
 
 		// Handle votes channel and put the vote into vote pool.
@@ -135,7 +135,7 @@ func (pool *VotePool) putIntoVotePool(vote *types.VoteEnvelope) bool {
 	var votesPq *votesPriorityQueue
 	isFutureVote := false
 
-	voteBlock := pool.chain.GetHeaderByHash(targetHash)
+	voteBlock := pool.chain.GetVerifiedHeaderByHash(targetHash)
 	if voteBlock == nil {
 		votes = pool.futureVotes
 		votesPq = pool.futureVotesPq
@@ -158,6 +158,7 @@ func (pool *VotePool) putIntoVotePool(vote *types.VoteEnvelope) bool {
 
 		// Send vote for handler usage of broadcasting to peers.
 		voteEv := core.NewVoteEvent{Vote: vote}
+		log.Debug("The vote info to send is:", "voteBlockNumber", targetNumber, "voteBlockHash", targetHash)
 		pool.votesFeed.Send(voteEv)
 	}
 
@@ -226,7 +227,7 @@ func (pool *VotePool) transferVotesFromFutureToCur(latestBlockHeader *types.Head
 	futurePqBuffer := make([]*types.VoteData, 0)
 	for futurePq.Len() > 0 && futurePq.Peek().TargetNumber <= latestBlockNumber {
 		blockHash := futurePq.Peek().TargetHash
-		header := pool.chain.GetHeaderByHash(blockHash)
+		header := pool.chain.GetVerifiedHeaderByHash(blockHash)
 		if header == nil {
 			// Put into pq buffer used for later put again into futurePq
 			futurePqBuffer = append(futurePqBuffer, heap.Pop(futurePq).(*types.VoteData))

@@ -10,7 +10,6 @@ import (
 	"github.com/ethereum/go-ethereum/consensus"
 	"github.com/ethereum/go-ethereum/core"
 	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/eth/downloader"
 	"github.com/ethereum/go-ethereum/event"
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
@@ -38,8 +37,8 @@ type VoteManager struct {
 
 	chain *core.BlockChain
 
-	chainHeadCh  chan core.ChainHeadEvent
-	chainHeadSub event.Subscription
+	chainHeadHeaderVerifiedCh  chan core.ChainHeadHeaderVerifiedEvent
+	chainHeadHeaderVerifiedSub event.Subscription
 
 	// used for backup validators to sync votes from corresponding mining validator
 	syncVoteCh  chan core.NewVoteEvent
@@ -54,12 +53,12 @@ type VoteManager struct {
 
 func NewVoteManager(eth Backend, chain *core.BlockChain, pool *VotePool, journalPath, blsPasswordPath, blsWalletPath string, engine consensus.PoSA) (*VoteManager, error) {
 	voteManager := &VoteManager{
-		eth:         eth,
-		chain:       chain,
-		chainHeadCh: make(chan core.ChainHeadEvent, chainHeadChanSize),
-		syncVoteCh:  make(chan core.NewVoteEvent, voteBufferForPut),
-		pool:        pool,
-		engine:      engine,
+		eth:                       eth,
+		chain:                     chain,
+		chainHeadHeaderVerifiedCh: make(chan core.ChainHeadHeaderVerifiedEvent, chainHeadHeaderVerifiedChanSize),
+		syncVoteCh:                make(chan core.NewVoteEvent, voteBufferForPut),
+		pool:                      pool,
+		engine:                    engine,
 	}
 
 	// Create voteSigner.
@@ -79,7 +78,7 @@ func NewVoteManager(eth Backend, chain *core.BlockChain, pool *VotePool, journal
 	voteManager.journal = voteJournal
 
 	// Subscribe to chain head event.
-	voteManager.chainHeadSub = voteManager.chain.SubscribeChainHeadEvent(voteManager.chainHeadCh)
+	voteManager.chainHeadHeaderVerifiedSub = voteManager.chain.SubscribeChainHeadHeaderVerifiedEvent(voteManager.chainHeadHeaderVerifiedCh)
 	voteManager.syncVoteSub = voteManager.pool.SubscribeNewVoteEvent(voteManager.syncVoteCh)
 
 	go voteManager.loop()
@@ -89,46 +88,14 @@ func NewVoteManager(eth Backend, chain *core.BlockChain, pool *VotePool, journal
 
 func (voteManager *VoteManager) loop() {
 	log.Debug("vote manager routine loop started")
-	defer voteManager.chainHeadSub.Unsubscribe()
+	defer voteManager.chainHeadHeaderVerifiedSub.Unsubscribe()
 	defer voteManager.syncVoteSub.Unsubscribe()
 
-	events := voteManager.eth.EventMux().Subscribe(downloader.StartEvent{}, downloader.DoneEvent{}, downloader.FailedEvent{})
-	defer func() {
-		log.Debug("vote manager loop defer func occur")
-		if !events.Closed() {
-			log.Debug("event not closed, unsubscribed by vote manager loop")
-			events.Unsubscribe()
-		}
-	}()
-
-	dlEventCh := events.Chan()
-
-	startVote := true
 	blockCountSinceMining := 0
 	var once sync.Once
 	for {
 		select {
-		case ev := <-dlEventCh:
-			if ev == nil {
-				log.Debug("dlEvent is nil, continue")
-				continue
-			}
-			switch ev.Data.(type) {
-			case downloader.StartEvent:
-				log.Debug("downloader is in startEvent mode, will not startVote")
-				startVote = false
-			case downloader.FailedEvent:
-				log.Debug("downloader is in FailedEvent mode, set startVote flag as true")
-				startVote = true
-			case downloader.DoneEvent:
-				log.Debug("downloader is in DoneEvent mode, set the startVote flag to true")
-				startVote = true
-			}
-		case cHead := <-voteManager.chainHeadCh:
-			if !startVote {
-				log.Debug("startVote flag is false, continue")
-				continue
-			}
+		case cHead := <-voteManager.chainHeadHeaderVerifiedCh:
 			if !voteManager.eth.IsMining() {
 				blockCountSinceMining = 0
 				log.Debug("skip voting because mining is disabled, continue")
@@ -243,7 +210,7 @@ func (voteManager *VoteManager) loop() {
 		case <-voteManager.syncVoteSub.Err():
 			log.Debug("voteManager subscribed votes failed")
 			return
-		case <-voteManager.chainHeadSub.Err():
+		case <-voteManager.chainHeadHeaderVerifiedSub.Err():
 			log.Debug("voteManager subscribed chainHead failed")
 			return
 		}

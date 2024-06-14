@@ -316,7 +316,7 @@ func newHandler(config *handlerConfig) (*handler, error) {
 			}
 			return 0, nil
 		}
-		return h.chain.InsertChain(blocks)
+		return h.chain.VoteAndInsertNewBlock(blocks[0])
 	}
 
 	broadcastBlockWithCheck := func(block *types.Block, propagate bool) {

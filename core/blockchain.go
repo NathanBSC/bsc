@@ -108,18 +108,19 @@ var (
 )
 
 const (
-	bodyCacheLimit      = 256
-	blockCacheLimit     = 256
-	diffLayerCacheLimit = 1024
-	receiptsCacheLimit  = 10000
-	sidecarsCacheLimit  = 1024
-	txLookupCacheLimit  = 1024
-	maxBadBlockLimit    = 16
-	maxFutureBlocks     = 256
-	maxTimeFutureBlocks = 30
-	TriesInMemory       = 128
-	maxBeyondBlocks     = 2048
-	prefetchTxNumber    = 100
+	bodyCacheLimit           = 256
+	blockCacheLimit          = 256
+	verifiedHeaderCacheLimit = 256
+	diffLayerCacheLimit      = 1024
+	receiptsCacheLimit       = 10000
+	sidecarsCacheLimit       = 1024
+	txLookupCacheLimit       = 1024
+	maxBadBlockLimit         = 16
+	maxFutureBlocks          = 256
+	maxTimeFutureBlocks      = 30
+	TriesInMemory            = 128
+	maxBeyondBlocks          = 2048
+	prefetchTxNumber         = 100
 
 	diffLayerFreezerRecheckInterval = 3 * time.Second
 	maxDiffForkDist                 = 11 // Maximum allowed backward distance from the chain head
@@ -259,17 +260,18 @@ type BlockChain struct {
 	triesInMemory uint64
 	txIndexer     *txIndexer // Transaction indexer, might be nil if not enabled
 
-	hc                  *HeaderChain
-	rmLogsFeed          event.Feed
-	chainFeed           event.Feed
-	chainSideFeed       event.Feed
-	chainHeadFeed       event.Feed
-	chainBlockFeed      event.Feed
-	logsFeed            event.Feed
-	blockProcFeed       event.Feed
-	finalizedHeaderFeed event.Feed
-	scope               event.SubscriptionScope
-	genesisBlock        *types.Block
+	hc                          *HeaderChain
+	rmLogsFeed                  event.Feed
+	chainFeed                   event.Feed
+	chainSideFeed               event.Feed
+	chainHeadFeed               event.Feed
+	chainHeadHeaderVerifiedFeed event.Feed
+	chainBlockFeed              event.Feed
+	logsFeed                    event.Feed
+	blockProcFeed               event.Feed
+	finalizedHeaderFeed         event.Feed
+	scope                       event.SubscriptionScope
+	genesisBlock                *types.Block
 
 	// This mutex synchronizes chain write operations.
 	// Readers don't need to take it, they can just read the database.
@@ -281,12 +283,13 @@ type BlockChain struct {
 	currentFinalBlock     atomic.Pointer[types.Header] // Latest (consensus) finalized block
 	chasingHead           atomic.Pointer[types.Header]
 
-	bodyCache     *lru.Cache[common.Hash, *types.Body]
-	bodyRLPCache  *lru.Cache[common.Hash, rlp.RawValue]
-	receiptsCache *lru.Cache[common.Hash, []*types.Receipt]
-	blockCache    *lru.Cache[common.Hash, *types.Block]
-	txLookupCache *lru.Cache[common.Hash, txLookup]
-	sidecarsCache *lru.Cache[common.Hash, types.BlobSidecars]
+	bodyCache           *lru.Cache[common.Hash, *types.Body]
+	bodyRLPCache        *lru.Cache[common.Hash, rlp.RawValue]
+	receiptsCache       *lru.Cache[common.Hash, []*types.Receipt]
+	blockCache          *lru.Cache[common.Hash, *types.Block]
+	txLookupCache       *lru.Cache[common.Hash, txLookup]
+	sidecarsCache       *lru.Cache[common.Hash, types.BlobSidecars]
+	verifiedHeaderCache *lru.Cache[common.Hash, *types.Header]
 
 	// future blocks are blocks added for later processing
 	futureBlocks *lru.Cache[common.Hash, *types.Block]
@@ -359,28 +362,29 @@ func NewBlockChain(db ethdb.Database, cacheConfig *CacheConfig, genesis *Genesis
 	*/
 
 	bc := &BlockChain{
-		chainConfig:        chainConfig,
-		cacheConfig:        cacheConfig,
-		db:                 db,
-		triedb:             triedb,
-		triegc:             prque.New[int64, common.Hash](nil),
-		quit:               make(chan struct{}),
-		triesInMemory:      cacheConfig.TriesInMemory,
-		chainmu:            syncx.NewClosableMutex(),
-		bodyCache:          lru.NewCache[common.Hash, *types.Body](bodyCacheLimit),
-		bodyRLPCache:       lru.NewCache[common.Hash, rlp.RawValue](bodyCacheLimit),
-		receiptsCache:      lru.NewCache[common.Hash, []*types.Receipt](receiptsCacheLimit),
-		sidecarsCache:      lru.NewCache[common.Hash, types.BlobSidecars](sidecarsCacheLimit),
-		blockCache:         lru.NewCache[common.Hash, *types.Block](blockCacheLimit),
-		txLookupCache:      lru.NewCache[common.Hash, txLookup](txLookupCacheLimit),
-		futureBlocks:       lru.NewCache[common.Hash, *types.Block](maxFutureBlocks),
-		badBlockCache:      lru.NewCache[common.Hash, time.Time](maxBadBlockLimit),
-		diffLayerCache:     diffLayerCache,
-		diffLayerChanCache: diffLayerChanCache,
-		engine:             engine,
-		vmConfig:           vmConfig,
-		diffQueue:          prque.New[int64, *types.DiffLayer](nil),
-		diffQueueBuffer:    make(chan *types.DiffLayer),
+		chainConfig:         chainConfig,
+		cacheConfig:         cacheConfig,
+		db:                  db,
+		triedb:              triedb,
+		triegc:              prque.New[int64, common.Hash](nil),
+		quit:                make(chan struct{}),
+		triesInMemory:       cacheConfig.TriesInMemory,
+		chainmu:             syncx.NewClosableMutex(),
+		bodyCache:           lru.NewCache[common.Hash, *types.Body](bodyCacheLimit),
+		bodyRLPCache:        lru.NewCache[common.Hash, rlp.RawValue](bodyCacheLimit),
+		receiptsCache:       lru.NewCache[common.Hash, []*types.Receipt](receiptsCacheLimit),
+		sidecarsCache:       lru.NewCache[common.Hash, types.BlobSidecars](sidecarsCacheLimit),
+		blockCache:          lru.NewCache[common.Hash, *types.Block](blockCacheLimit),
+		verifiedHeaderCache: lru.NewCache[common.Hash, *types.Header](verifiedHeaderCacheLimit),
+		txLookupCache:       lru.NewCache[common.Hash, txLookup](txLookupCacheLimit),
+		futureBlocks:        lru.NewCache[common.Hash, *types.Block](maxFutureBlocks),
+		badBlockCache:       lru.NewCache[common.Hash, time.Time](maxBadBlockLimit),
+		diffLayerCache:      diffLayerCache,
+		diffLayerChanCache:  diffLayerChanCache,
+		engine:              engine,
+		vmConfig:            vmConfig,
+		diffQueue:           prque.New[int64, *types.DiffLayer](nil),
+		diffQueueBuffer:     make(chan *types.DiffLayer),
 	}
 	bc.flushInterval.Store(int64(cacheConfig.TrieTimeLimit))
 	bc.forker = NewForkChoice(bc, shouldPreserve)
@@ -1158,6 +1162,7 @@ func (bc *BlockChain) setHeadBeyondRoot(head uint64, time uint64, root common.Ha
 	bc.receiptsCache.Purge()
 	bc.sidecarsCache.Purge()
 	bc.blockCache.Purge()
+	bc.verifiedHeaderCache.Purge()
 	bc.txLookupCache.Purge()
 	bc.futureBlocks.Purge()
 
@@ -1969,6 +1974,7 @@ func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types
 			}
 		}
 		if emitHeadEvent {
+			bc.chainHeadHeaderVerifiedFeed.Send(ChainHeadHeaderVerifiedEvent{Block: block})
 			bc.chainHeadFeed.Send(ChainHeadEvent{Block: block})
 			if finalizedHeader != nil {
 				bc.finalizedHeaderFeed.Send(FinalizedHeaderEvent{finalizedHeader})
@@ -1997,6 +2003,20 @@ func (bc *BlockChain) addFutureBlock(block *types.Block) error {
 	}
 	bc.futureBlocks.Add(block.Hash(), block)
 	return nil
+}
+
+func (bc *BlockChain) VoteAndInsertNewBlock(block *types.Block) (int, error) {
+	currentBlock := bc.CurrentBlock()
+	reorg, err := bc.forker.ReorgNeededWithFastFinality(currentBlock, block.Header())
+	if err != nil {
+		return 0, err
+	}
+	if reorg {
+		bc.verifiedHeaderCache.Add(block.Hash(), block.Header())
+		bc.chainHeadHeaderVerifiedFeed.Send(ChainHeadHeaderVerifiedEvent{Block: block})
+		log.Debug("VoteAndInsertNewBlock|ChainHeadHeaderVerifiedEvent")
+	}
+	return bc.InsertChain(types.Blocks{block})
 }
 
 // InsertChain attempts to insert the given batch of blocks in to the canonical

@@ -554,10 +554,28 @@ func (p *Parlia) verifyHeader(chain consensus.ChainHeaderReader, header *types.H
 	if header.Number == nil {
 		return errUnknownBlock
 	}
+	number := header.Number.Uint64()
 
-	// Don't waste time checking blocks from the future
+	// According to BEP-188, after Bohr fork, an in-turn validator is allowed to broadcast
+	// a mined block earlier but not earlier than its parent's timestamp when the block is ready .
 	if header.Time > uint64(time.Now().Unix()) {
-		return consensus.ErrFutureBlock
+		if !chain.Config().IsBohr(header.Number, header.Time) || header.Difficulty.Cmp(diffInTurn) != 0 {
+			return consensus.ErrFutureBlock
+		}
+		var parent *types.Header
+		if len(parents) > 0 {
+			parent = parents[len(parents)-1]
+		} else {
+			parent = chain.GetHeader(header.ParentHash, number-1)
+		}
+
+		if parent == nil || parent.Number.Uint64() != number-1 || parent.Hash() != header.ParentHash {
+			return consensus.ErrUnknownAncestor
+		}
+
+		if parent.Time > uint64(time.Now().Unix()) {
+			return consensus.ErrFutureParentBlock
+		}
 	}
 	// Check that the extra-data contains the vanity, validators and signature.
 	if len(header.Extra) < extraVanity {
@@ -568,9 +586,7 @@ func (p *Parlia) verifyHeader(chain consensus.ChainHeaderReader, header *types.H
 	}
 
 	// check extra data
-	number := header.Number.Uint64()
 	isEpoch := number%p.config.Epoch == 0
-
 	// Ensure that the extra-data contains a signer list on checkpoint, but none otherwise
 	signersBytes := getValidatorBytesFromHeader(header, p.chainConfig, p.config)
 	if !isEpoch && len(signersBytes) != 0 {
@@ -1496,7 +1512,7 @@ func (p *Parlia) Delay(chain consensus.ChainReader, header *types.Header, leftOv
 		delay = delay - *leftOver
 	}
 
-	half := time.Duration(p.config.Period) * time.Second
+	half := time.Duration(p.config.Period)*time.Second - 500*time.Millisecond
 	if uint8(header.Number.Int64())%snap.TurnTerm == snap.TurnTerm-1 {
 		// The blocking time should be no more than half of the period when mining the last block in one turn
 		half = time.Duration(p.config.Period) * time.Second / 2
@@ -1544,8 +1560,18 @@ func (p *Parlia) Seal(chain consensus.ChainHeaderReader, block *types.Block, res
 		return nil
 	}
 
-	// Sweet, the protocol permits us to sign the block, wait for our time
 	delay := p.delayForRamanujanFork(snap, header)
+	// BEP-188 allows an in-turn validator to broadcast the mined block earlier
+	// but not earlier than its parent's timestamp after Planck fork.
+	if header.Difficulty.Cmp(diffInTurn) == 0 {
+		parent := chain.GetHeader(header.ParentHash, number-1)
+		if parent == nil || parent.Number.Uint64() != number-1 || parent.Hash() != header.ParentHash {
+			return consensus.ErrUnknownAncestor
+		}
+		if parent.Time > uint64(time.Now().Unix()) {
+			delay = time.Until(time.Unix(int64(parent.Time), 0))
+		}
+	}
 
 	log.Info("Sealing block with", "number", number, "delay", delay, "headerDifficulty", header.Difficulty, "val", val.Hex())
 

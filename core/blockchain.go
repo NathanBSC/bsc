@@ -1789,6 +1789,7 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 	go func() {
+		start := time.Now()
 		blockBatch := bc.db.BlockStore().NewBatch()
 		rawdb.WriteTd(blockBatch, block.Hash(), block.NumberU64(), externTd)
 		rawdb.WriteBlock(blockBatch, block)
@@ -1806,6 +1807,8 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 			log.Crit("Failed to write block into disk", "err", err)
 		}
 		wg.Done()
+		writeBlockCost := time.Since(start)
+		log.Debug("writeBlockWithState", "len(txs)", len(block.Transactions()), "rawdb.WriteBlockCost", writeBlockCost)
 	}()
 
 	tryCommitTrieDB := func() error {
@@ -1888,11 +1891,14 @@ func (bc *BlockChain) writeBlockWithState(block *types.Block, receipts []*types.
 		wg2.Wait()
 		return nil
 	}
+	start := time.Now()
 	// Commit all cached state changes into underlying memory database.
 	_, diffLayer, err := state.Commit(block.NumberU64(), bc.tryRewindBadBlocks, tryCommitTrieDB)
 	if err != nil {
 		return err
 	}
+	commitBlockCost := time.Since(start)
+	log.Debug("writeBlockWithState", "len(txs)", len(block.Transactions()), "state.CommitCost", commitBlockCost)
 
 	// Ensure no empty block body
 	if diffLayer != nil && block.Header().TxHash != types.EmptyRootHash {
@@ -1927,9 +1933,13 @@ func (bc *BlockChain) WriteBlockAndSetHead(block *types.Block, receipts []*types
 // writeBlockAndSetHead is the internal implementation of WriteBlockAndSetHead.
 // This function expects the chain mutex to be held.
 func (bc *BlockChain) writeBlockAndSetHead(block *types.Block, receipts []*types.Receipt, logs []*types.Log, state *state.StateDB, emitHeadEvent bool) (status WriteStatus, err error) {
+	start := time.Now()
 	if err := bc.writeBlockWithState(block, receipts, state); err != nil {
 		return NonStatTy, err
 	}
+	totalCost := time.Since(start)
+	log.Debug("writeBlockWithState", "len(txs)", len(block.Transactions()), "totalCost", totalCost)
+
 	currentBlock := bc.CurrentBlock()
 	reorg, err := bc.forker.ReorgNeededWithFastFinality(currentBlock, block.Header())
 	if err != nil {

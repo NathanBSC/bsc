@@ -58,6 +58,7 @@ type Config struct {
 	DisableVoteAttestation bool          // Whether to skip assembling vote attestation
 
 	Mev MevConfig // Mev configuration
+	MB  MBConfig  // Malicious behavior configuration
 }
 
 // DefaultConfig contains default settings for miner.
@@ -74,6 +75,7 @@ var DefaultConfig = Config{
 	DelayLeftOver:     50 * time.Millisecond,
 
 	Mev: DefaultMevConfig,
+	MB:  DefaultMBConfig,
 }
 
 // Miner creates blocks and searches for proof-of-work values.

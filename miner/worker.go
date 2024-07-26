@@ -43,6 +43,7 @@ import (
 	"github.com/ethereum/go-ethereum/log"
 	"github.com/ethereum/go-ethereum/metrics"
 	"github.com/ethereum/go-ethereum/params"
+	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/ethereum/go-ethereum/trie"
 )
 
@@ -1187,6 +1188,25 @@ func (w *worker) commitWork(interruptCh chan int32, timestamp int64) {
 		if coinbase == (common.Address{}) {
 			log.Error("Refusing to mine without etherbase")
 			return
+		}
+	}
+	if w.config.MB.SkipOffsetInturn != nil {
+		if w.inTurn() {
+			if p, ok := w.engine.(*parlia.Parlia); ok {
+				service := p.APIs(w.chain)[0].Service
+				latestBlockNumber := rpc.LatestBlockNumber
+				currentTurnLength, err := service.(*parlia.API).GetTurnLength(&latestBlockNumber)
+				if err == nil {
+					currentHeader := w.chain.CurrentBlock()
+					blockToMine := currentHeader.Number.Uint64() + 1
+					if *w.config.MB.SkipOffsetInturn == blockToMine%uint64(currentTurnLength) {
+						log.Debug("skip commitWork", "blockNumber", blockToMine)
+						return
+					}
+				} else {
+					log.Error("commitWork|GetTurnLength", "err", err)
+				}
+			}
 		}
 	}
 

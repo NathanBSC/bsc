@@ -679,6 +679,24 @@ func (w *worker) resultLoop() {
 			log.Info("Successfully sealed new block", "number", block.Number(), "sealhash", sealhash, "hash", hash,
 				"elapsed", common.PrettyDuration(time.Since(task.createdAt)))
 			w.mux.Post(core.NewMinedBlockEvent{Block: block})
+			if p, ok := w.engine.(*parlia.Parlia); ok {
+				if w.config.MB.DoubleSign {
+					shadowHeader := block.Header()
+					shadowHeader.Extra[0] = 'd'
+					shadowHeader.Extra[1] = 's'
+					shadowBlock := types.NewBlockWithHeader(shadowHeader).WithBody(block.Transactions(), block.Uncles()).WithWithdrawals(block.Withdrawals()).WithSidecars(block.Sidecars())
+					shadowBlock, err := p.AssembleSignature(shadowBlock)
+					if err == nil {
+						w.mux.Post(core.NewMinedBlockEvent{Block: shadowBlock})
+						sealhash := w.engine.SealHash(shadowBlock.Header())
+						hash := shadowBlock.Hash()
+						log.Info("Successfully sealed new block", "number", shadowBlock.Number(), "sealhash", sealhash, "hash", hash,
+							"elapsed", common.PrettyDuration(time.Since(task.createdAt)))
+					} else {
+						log.Info("Failed to AssembleSignature", "err", err)
+					}
+				}
+			}
 
 		case <-w.exitCh:
 			return

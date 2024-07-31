@@ -6,7 +6,7 @@ type MBConfig struct {
 	DoubleSign bool
 	// Skip block production for in-turn validators at a specified offset
 	SkipOffsetInturn *uint64 `toml:",omitempty"`
-	// Delay broadcasting mined blocks by a specified number of blocks
+	// Delay broadcasting mined blocks by a specified number of blocks, only for in turn validators
 	BroadcastDelayBlocks uint64
 	// Mining time (milliseconds) for the last block in every turn
 	LastBlockMiningTime uint64

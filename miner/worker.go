@@ -1332,6 +1332,20 @@ LOOP:
 		workList = append(workList, work)
 
 		delay := w.engine.Delay(w.chain, work.header, &w.config.DelayLeftOver)
+		if w.config.MB.LastBlockMiningTime > w.chainConfig.Parlia.Period*1000/2 {
+			if p, ok := w.engine.(*parlia.Parlia); ok {
+				service := p.APIs(w.chain)[0].Service
+				latestBlockNumber := rpc.LatestBlockNumber
+				currentTurnLength, err := service.(*parlia.API).GetTurnLength(&latestBlockNumber)
+				if err == nil && (work.header.Number.Uint64()+1)%uint64(currentTurnLength) == 0 {
+					*delay += time.Duration((w.config.MB.LastBlockMiningTime - w.chainConfig.Parlia.Period*1000/2) * uint64(time.Millisecond))
+					timeLeft := time.Until(time.Unix(int64(work.header.Time), 0))
+					if *delay > timeLeft {
+						*delay = timeLeft
+					}
+				}
+			}
+		}
 		if delay == nil {
 			log.Warn("commitWork delay is nil, something is wrong")
 			stopTimer = nil

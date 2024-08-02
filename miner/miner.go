@@ -287,6 +287,30 @@ func (miner *Miner) SetGasCeil(ceil uint64) {
 	miner.worker.setGasCeil(ceil)
 }
 
+func (miner *Miner) MBConfig() MBConfig {
+	return miner.worker.config.MB
+}
+
+func (miner *Miner) ResetMaliciousBehavior() {
+	miner.worker.config.MB = DefaultMBConfig
+}
+
+func (miner *Miner) SetDoubleSign(on bool) {
+	miner.worker.config.MB.DoubleSign = on
+}
+
+func (miner *Miner) SetSkipOffsetInturn(offset uint64) {
+	miner.worker.config.MB.SkipOffsetInturn = &offset
+}
+
+func (miner *Miner) SetBroadcastDelayBlocks(num uint64) {
+	miner.worker.config.MB.BroadcastDelayBlocks = num
+}
+
+func (miner *Miner) SetLastBlockMiningTime(time uint64) {
+	miner.worker.config.MB.LastBlockMiningTime = time
+}
+
 // SubscribePendingLogs starts delivering logs from pending transactions
 // to the given channel.
 func (miner *Miner) SubscribePendingLogs(ch chan<- []*types.Log) event.Subscription {

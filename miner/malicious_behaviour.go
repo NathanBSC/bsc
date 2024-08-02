@@ -15,5 +15,5 @@ type MBConfig struct {
 var DefaultMBConfig = MBConfig{
 	DoubleSign:           false,
 	BroadcastDelayBlocks: 0,
-	LastBlockMiningTime:  2500,
+	LastBlockMiningTime:  0,
 }

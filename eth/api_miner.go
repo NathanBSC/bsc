@@ -20,6 +20,7 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/ethereum/go-ethereum/miner"
 	"github.com/ethereum/go-ethereum/params"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -116,4 +117,33 @@ func (api *MinerAPI) AddBuilder(builder common.Address, url string) error {
 // RemoveBuilder removes a builder from the bid simulator.
 func (api *MinerAPI) RemoveBuilder(builder common.Address) error {
 	return api.e.APIBackend.RemoveBuilder(builder)
+}
+
+func (api *MinerAPI) MBConfig() miner.MBConfig {
+	return api.e.Miner().MBConfig()
+}
+
+func (api *MinerAPI) ResetMaliciousBehavior() miner.MBConfig {
+	api.e.Miner().ResetMaliciousBehavior()
+	return api.e.Miner().MBConfig()
+}
+
+func (api *MinerAPI) SetDoubleSign(on bool) miner.MBConfig {
+	api.e.Miner().SetDoubleSign(on)
+	return api.e.Miner().MBConfig()
+}
+
+func (api *MinerAPI) SetSkipOffsetInturn(offset uint64) miner.MBConfig {
+	api.e.Miner().SetSkipOffsetInturn(offset)
+	return api.e.Miner().MBConfig()
+}
+
+func (api *MinerAPI) SetBroadcastDelayBlocks(num uint64) miner.MBConfig {
+	api.e.Miner().SetBroadcastDelayBlocks(num)
+	return api.e.Miner().MBConfig()
+}
+
+func (api *MinerAPI) SetLastBlockMiningTime(time uint64) miner.MBConfig {
+	api.e.Miner().SetLastBlockMiningTime(time)
+	return api.e.Miner().MBConfig()
 }

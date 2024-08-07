@@ -305,11 +305,8 @@ func newWorker(config *Config, chainConfig *params.ChainConfig, engine consensus
 	go worker.newWorkLoop(recommit)
 	go worker.resultLoop()
 	go worker.taskLoop()
-
-	if worker.config.MB.BroadcastDelayBlocks > 0 {
-		worker.wg.Add(1)
-		go worker.delayBlocksBroadcastLoop()
-	}
+	worker.wg.Add(1)
+	go worker.delayBlocksBroadcastLoop()
 
 	// Submit first work to initialize pending state.
 	if init {
@@ -727,7 +724,7 @@ func (w *worker) delayBlocksBroadcastLoop() {
 	defer w.wg.Done()
 
 	for {
-		if len(w.delayedBlocksForBroadcast) > 0 {
+		if len(w.delayedBlocksForBroadcast) > 0 && w.config.MB.BroadcastDelayBlocks > 0 {
 			w.delayedMu.Lock()
 
 			currentBlock := w.chain.CurrentBlock()

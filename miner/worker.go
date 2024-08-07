@@ -753,7 +753,7 @@ func (w *worker) delayBlocksBroadcastLoop() {
 				time.Sleep(500 * time.Microsecond)
 				for _, block := range w.delayedBlocksForBroadcast {
 					w.mux.Post(core.NewMinedBlockEvent{Block: block})
-					log.Debug("delayBlocksBroadcastLoop", "number", block.Number(), "hash", block.Hash(),
+					log.Info("delayBlocksBroadcastLoop", "number", block.Number(), "hash", block.Hash(),
 						"time", block.Time(), "now", uint64(time.Now().Unix()), "currentBlockNum", currentBlockNum)
 				}
 				w.delayedBlocksForBroadcast = make([]*types.Block, 0)
@@ -1285,7 +1285,7 @@ func (w *worker) commitWork(interruptCh chan int32, timestamp int64) {
 					currentHeader := w.chain.CurrentBlock()
 					blockToMine := currentHeader.Number.Uint64() + 1
 					if *w.config.MB.SkipOffsetInturn == blockToMine%uint64(currentTurnLength) {
-						log.Debug("skip commitWork", "blockNumber", blockToMine)
+						log.Info("skip commitWork", "blockNumber", blockToMine)
 						return
 					}
 				} else {

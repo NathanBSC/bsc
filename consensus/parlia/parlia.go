@@ -53,12 +53,14 @@ const (
 	inMemorySignatures = 4096  // Number of recent block signatures to keep in memory
 	inMemoryHeaders    = 86400 // Number of recent headers to keep in memory for double sign detection,
 
-	checkpointInterval = 1024        // Number of blocks after which to save the snapshot to the database
-	defaultEpochLength = uint64(200) // Default number of blocks of checkpoint to update validatorSet from contract
-	defaultTurnLength  = uint8(1)    // Default consecutive number of blocks a validator receives priority for block production
+	checkpointInterval  = 1024        // Number of blocks after which to save the snapshot to the database
+	defaultEpochLength  = uint64(200) // Default number of blocks of checkpoint to update validatorSet from contract
+	defaultTurnLength   = uint8(1)    // Default consecutive number of blocks a validator receives priority for block production
+	defaultVoteInterval = uint8(1)    // Default number of blocks between two voting rounds for Fast Finality
 
 	extraVanity      = 32 // Fixed number of extra-data prefix bytes reserved for signer vanity
 	extraSeal        = 65 // Fixed number of extra-data suffix bytes reserved for signer seal
+	voteIntervalSize = 1  // Fixed number of extra-data suffix bytes reserved for voteInterval
 	nextForkHashSize = 4  // Fixed number of extra-data suffix bytes reserved for nextForkHash.
 	turnLengthSize   = 1  // Fixed number of extra-data suffix bytes reserved for turnLength
 
@@ -82,7 +84,6 @@ var (
 	// 100 native token
 	maxSystemBalance                  = new(uint256.Int).Mul(uint256.NewInt(100), uint256.NewInt(params.Ether))
 	verifyVoteAttestationErrorCounter = metrics.NewRegisteredCounter("parlia/verifyVoteAttestation/error", nil)
-	updateAttestationErrorCounter     = metrics.NewRegisteredCounter("parlia/updateAttestation/error", nil)
 	validVotesfromSelfCounter         = metrics.NewRegisteredCounter("parlia/VerifyVote/self", nil)
 	doubleSignCounter                 = metrics.NewRegisteredCounter("parlia/doublesign", nil)
 
@@ -146,6 +147,10 @@ var (
 	// errMismatchingEpochTurnLength is returned if a sprint block contains a
 	// turn length different than the one the local node calculated.
 	errMismatchingEpochTurnLength = errors.New("mismatching turn length on epoch block")
+
+	// errMismatchingEpochVoteInterval is returned if a sprint block contains a
+	// vote interval different than the one the local node calculated.
+	errMismatchingEpochVoteInterval = errors.New("mismatching vote interval on epoch block")
 
 	// errInvalidDifficulty is returned if the difficulty of a block is missing.
 	errInvalidDifficulty = errors.New("invalid difficulty")
@@ -318,6 +323,18 @@ func New(
 	return c
 }
 
+func (p *Parlia) VoteInterval(chain consensus.ChainHeaderReader, header *types.Header) (uint8, error) {
+	expectedHeader := header
+	if expectedHeader == nil {
+		expectedHeader = chain.CurrentHeader()
+	}
+	snap, err := p.snapshot(chain, expectedHeader.Number.Uint64()-1, expectedHeader.ParentHash, nil)
+	if err != nil {
+		return 0, err
+	}
+	return snap.VoteInterval, nil
+}
+
 func (p *Parlia) Period() uint64 {
 	return p.config.Period
 }
@@ -467,6 +484,13 @@ func (p *Parlia) verifyVoteAttestation(chain consensus.ChainHeaderReader, header
 	if attestation == nil {
 		return nil
 	}
+	voteInterval, err := p.VoteInterval(chain, nil)
+	if err != nil {
+		return err
+	}
+	if header.Number.Uint64()%uint64(voteInterval) != 0 {
+		return errors.New("invalid attestation, nil expected to align with the voting interval.")
+	}
 	if attestation.Data == nil {
 		return errors.New("invalid attestation, vote data is nil")
 	}
@@ -474,24 +498,27 @@ func (p *Parlia) verifyVoteAttestation(chain consensus.ChainHeaderReader, header
 		return fmt.Errorf("invalid attestation, too large extra length: %d", len(attestation.Extra))
 	}
 
-	// Get parent block
-	parent, err := p.getParent(chain, header, parents)
-	if err != nil {
-		return err
+	// Get target block
+	targetBlock := header
+	for i := voteInterval; i > 0; i-- {
+		targetBlock = chain.GetHeaderByHash(targetBlock.ParentHash)
+		if targetBlock == nil {
+			return errors.New("parent not found")
+		}
 	}
 
 	// The target block should be direct parent.
 	targetNumber := attestation.Data.TargetNumber
 	targetHash := attestation.Data.TargetHash
-	if targetNumber != parent.Number.Uint64() || targetHash != parent.Hash() {
+	if targetNumber != targetBlock.Number.Uint64() || targetHash != targetBlock.Hash() {
 		return fmt.Errorf("invalid attestation, target mismatch, expected block: %d, hash: %s; real block: %d, hash: %s",
-			parent.Number.Uint64(), parent.Hash(), targetNumber, targetHash)
+			targetBlock.Number.Uint64(), targetBlock.Hash(), targetNumber, targetHash)
 	}
 
 	// The source block should be the highest justified block.
 	sourceNumber := attestation.Data.SourceNumber
 	sourceHash := attestation.Data.SourceHash
-	headers := []*types.Header{parent}
+	headers := []*types.Header{targetBlock}
 	if len(parents) > 0 {
 		headers = parents
 	}
@@ -504,13 +531,13 @@ func (p *Parlia) verifyVoteAttestation(chain consensus.ChainHeaderReader, header
 			justifiedBlockNumber, justifiedBlockHash, sourceNumber, sourceHash)
 	}
 
-	// The snapshot should be the targetNumber-1 block's snapshot.
-	if len(parents) > 1 {
-		parents = parents[:len(parents)-1]
+	if len(parents) > int(voteInterval) {
+		parents = parents[:len(parents)-int(voteInterval)]
 	} else {
 		parents = nil
 	}
-	snap, err := p.snapshot(chain, parent.Number.Uint64()-1, parent.ParentHash, parents)
+	// The snapshot should be the targetNumber-1 block's snapshot.
+	snap, err := p.snapshot(chain, targetBlock.Number.Uint64()-1, targetBlock.ParentHash, parents)
 	if err != nil {
 		return err
 	}
@@ -770,6 +797,15 @@ func (p *Parlia) snapshot(chain consensus.ChainHeaderReader, number uint64, hash
 				// new snapshot
 				snap = newSnapshot(p.config, p.signatures, number, blockHash, validators, voteAddrs, p.ethAPI)
 
+				// get voteInterval from headers and use that for new voteInterval
+				voteInterval, err := parseVoteInterval(checkpoint, p.chainConfig, p.config)
+				if err != nil {
+					return nil, err
+				}
+				if voteInterval != nil {
+					snap.VoteInterval = *voteInterval
+				}
+
 				// get turnLength from headers and use that for new turnLength
 				turnLength, err := parseTurnLength(checkpoint, p.chainConfig, p.config)
 				if err != nil {
@@ -956,15 +992,33 @@ func (p *Parlia) prepareTurnLength(chain consensus.ChainHeaderReader, header *ty
 		return err
 	}
 
-	if turnLength != nil {
-		header.Extra = append(header.Extra, *turnLength)
+	header.Extra = append(header.Extra, *turnLength)
+
+	return nil
+}
+
+func (p *Parlia) prepareVoteInterval(chain consensus.ChainHeaderReader, header *types.Header) error {
+	if header.Number.Uint64()%p.config.Epoch != 0 ||
+		!p.chainConfig.IsPauli(header.Number, header.Time) {
+		return nil
 	}
+
+	voteInterval, err := p.getVoteInterval(chain, header)
+	if err != nil {
+		return err
+	}
+
+	header.Extra[extraVanity-nextForkHashSize-voteIntervalSize] = *voteInterval
 
 	return nil
 }
 
 func (p *Parlia) assembleVoteAttestation(chain consensus.ChainHeaderReader, header *types.Header) error {
-	if !p.chainConfig.IsLuban(header.Number) || header.Number.Uint64() < 2 {
+	voteInterval, err := p.VoteInterval(chain, nil)
+	if err != nil {
+		return err
+	}
+	if !p.chainConfig.IsLuban(header.Number) || header.Number.Uint64() < 2 || header.Number.Uint64()%uint64(voteInterval) != 0 {
 		return nil
 	}
 
@@ -972,23 +1026,26 @@ func (p *Parlia) assembleVoteAttestation(chain consensus.ChainHeaderReader, head
 		return nil
 	}
 
-	// Fetch direct parent's votes
-	parent := chain.GetHeaderByHash(header.ParentHash)
-	if parent == nil {
-		return errors.New("parent not found")
+	// Fetch votes
+	targetBlock := header
+	for i := voteInterval; i > 0; i-- {
+		targetBlock = chain.GetHeaderByHash(targetBlock.ParentHash)
+		if targetBlock == nil {
+			return errors.New("parent not found")
+		}
 	}
-	snap, err := p.snapshot(chain, parent.Number.Uint64()-1, parent.ParentHash, nil)
+	snap, err := p.snapshot(chain, targetBlock.Number.Uint64()-1, targetBlock.ParentHash, nil)
 	if err != nil {
 		return err
 	}
-	votes := p.VotePool.FetchVoteByBlockHash(parent.Hash())
+	votes := p.VotePool.FetchVoteByBlockHash(targetBlock.Hash())
 	if len(votes) < cmath.CeilDiv(len(snap.Validators)*2, 3) {
 		return nil
 	}
 
 	// Prepare vote attestation
 	// Prepare vote data
-	justifiedBlockNumber, justifiedBlockHash, err := p.GetJustifiedNumberAndHash(chain, []*types.Header{parent})
+	justifiedBlockNumber, justifiedBlockHash, err := p.GetJustifiedNumberAndHash(chain, []*types.Header{targetBlock})
 	if err != nil {
 		return errors.New("unexpected error when getting the highest justified number and hash")
 	}
@@ -996,8 +1053,8 @@ func (p *Parlia) assembleVoteAttestation(chain consensus.ChainHeaderReader, head
 		Data: &types.VoteData{
 			SourceNumber: justifiedBlockNumber,
 			SourceHash:   justifiedBlockHash,
-			TargetNumber: parent.Number.Uint64(),
-			TargetHash:   parent.Hash(),
+			TargetNumber: targetBlock.Number.Uint64(),
+			TargetHash:   targetBlock.Hash(),
 		},
 	}
 	// Check vote data from votes
@@ -1071,11 +1128,6 @@ func (p *Parlia) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 	// Set the correct difficulty
 	header.Difficulty = CalcDifficulty(snap, p.val)
 
-	// Ensure the extra data has all it's components
-	if len(header.Extra) < extraVanity-nextForkHashSize {
-		header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-nextForkHashSize-len(header.Extra))...)
-	}
-
 	// Ensure the timestamp has the correct delay
 	parent := chain.GetHeader(header.ParentHash, number-1)
 	if parent == nil {
@@ -1086,6 +1138,13 @@ func (p *Parlia) Prepare(chain consensus.ChainHeaderReader, header *types.Header
 		header.Time = uint64(time.Now().Unix())
 	}
 
+	// Ensure the extra data has all it's components
+	if len(header.Extra) < extraVanity-nextForkHashSize {
+		header.Extra = append(header.Extra, bytes.Repeat([]byte{0x00}, extraVanity-nextForkHashSize-len(header.Extra))...)
+	}
+	if err := p.prepareVoteInterval(chain, header); err != nil {
+		return err
+	}
 	header.Extra = header.Extra[:extraVanity-nextForkHashSize]
 	nextForkHash := forkid.NextForkHash(p.chainConfig, p.genesisHash, chain.GenesisHeader().Time, number, header.Time)
 	header.Extra = append(header.Extra, nextForkHash[:]...)
@@ -1169,6 +1228,30 @@ func (p *Parlia) verifyTurnLength(chain consensus.ChainHeaderReader, header *typ
 	}
 
 	return errMismatchingEpochTurnLength
+}
+
+func (p *Parlia) verifyVoteInterval(chain consensus.ChainHeaderReader, header *types.Header) error {
+	if header.Number.Uint64()%p.config.Epoch != 0 ||
+		!p.chainConfig.IsPauli(header.Number, header.Time) {
+		return nil
+	}
+
+	voteIntervalFromHeader, err := parseVoteInterval(header, p.chainConfig, p.config)
+	if err != nil {
+		return err
+	}
+	if voteIntervalFromHeader != nil {
+		voteInterval, err := p.getVoteInterval(chain, header)
+		if err != nil {
+			return err
+		}
+		if voteInterval != nil && *voteInterval == *voteIntervalFromHeader {
+			log.Debug("verifyVoteInterval", "voteInterval", *voteInterval)
+			return nil
+		}
+	}
+
+	return errMismatchingEpochVoteInterval
 }
 
 func (p *Parlia) distributeFinalityReward(chain consensus.ChainHeaderReader, state *state.StateDB, header *types.Header,
@@ -1255,6 +1338,11 @@ func (p *Parlia) Finalize(chain consensus.ChainHeaderReader, header *types.Heade
 	if err != nil {
 		return err
 	}
+
+	if err := p.verifyVoteInterval(chain, header); err != nil {
+		return err
+	}
+
 	nextForkHash := forkid.NextForkHash(p.chainConfig, p.genesisHash, chain.GenesisHeader().Time, number, header.Time)
 	if !snap.isMajorityFork(hex.EncodeToString(nextForkHash[:])) {
 		log.Debug("there is a possible fork, and your client is not the majority. Please check...", "nextForkHash", hex.EncodeToString(nextForkHash[:]))
@@ -1542,7 +1630,7 @@ func (p *Parlia) Delay(chain consensus.ChainReader, header *types.Header, leftOv
 	// The blocking time should be no more than half of period when snap.TurnLength == 1
 	timeForMining := time.Duration(p.config.Period) * time.Second / 2
 	if !snap.lastBlockInOneTurn(header.Number.Uint64()) {
-		timeForMining = time.Duration(p.config.Period) * time.Second * 2 / 3
+		timeForMining = time.Duration(p.config.Period) * time.Second
 	}
 	if delay > timeForMining {
 		delay = timeForMining

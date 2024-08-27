@@ -517,6 +517,7 @@ type ChainConfig struct {
 	HaberTime      *uint64 `json:"haberTime,omitempty"`      // Haber switch time (nil = no fork, 0 = already on haber)
 	HaberFixTime   *uint64 `json:"haberFixTime,omitempty"`   // HaberFix switch time (nil = no fork, 0 = already on haberFix)
 	BohrTime       *uint64 `json:"bohrTime,omitempty"`       // Bohr switch time (nil = no fork, 0 = already on bohr)
+	PauliTime      *uint64 `json:"pauliTime,omitempty"`      // Pauli switch time (nil = no fork, 0 = already on pauli)
 	PragueTime     *uint64 `json:"pragueTime,omitempty"`     // Prague switch time (nil = no fork, 0 = already on prague)
 	VerkleTime     *uint64 `json:"verkleTime,omitempty"`     // Verkle switch time (nil = no fork, 0 = already on verkle)
 
@@ -571,6 +572,15 @@ func (c *CliqueConfig) String() string {
 type ParliaConfig struct {
 	Period uint64 `json:"period"` // Number of seconds between blocks to enforce
 	Epoch  uint64 `json:"epoch"`  // Epoch length to update validatorSet
+}
+
+// VoteInterval returns the voting interval based on the block number and timestamp.
+func (p *ParliaConfig) VoteInterval(chainConfig *ChainConfig, num *big.Int, time uint64) uint64 {
+	if chainConfig.IsPauli(num, time) {
+		return 2
+	} else {
+		return 1
+	}
 }
 
 // String implements the stringer interface, returning the consensus engine details.
@@ -637,7 +647,12 @@ func (c *ChainConfig) String() string {
 		BohrTime = big.NewInt(0).SetUint64(*c.BohrTime)
 	}
 
-	return fmt.Sprintf("{ChainID: %v Homestead: %v DAO: %v DAOSupport: %v EIP150: %v EIP155: %v EIP158: %v Byzantium: %v Constantinople: %v Petersburg: %v Istanbul: %v, Muir Glacier: %v, Ramanujan: %v, Niels: %v, MirrorSync: %v, Bruno: %v, Berlin: %v, YOLO v3: %v, CatalystBlock: %v, London: %v, ArrowGlacier: %v, MergeFork:%v, Euler: %v, Gibbs: %v, Nano: %v, Moran: %v, Planck: %v,Luban: %v, Plato: %v, Hertz: %v, Hertzfix: %v, ShanghaiTime: %v, KeplerTime: %v, FeynmanTime: %v, FeynmanFixTime: %v, CancunTime: %v, HaberTime: %v, HaberFixTime: %v, BohrTime: %v, Engine: %v}",
+	var PauliTime *big.Int
+	if c.PauliTime != nil {
+		PauliTime = big.NewInt(0).SetUint64(*c.PauliTime)
+	}
+
+	return fmt.Sprintf("{ChainID: %v Homestead: %v DAO: %v DAOSupport: %v EIP150: %v EIP155: %v EIP158: %v Byzantium: %v Constantinople: %v Petersburg: %v Istanbul: %v, Muir Glacier: %v, Ramanujan: %v, Niels: %v, MirrorSync: %v, Bruno: %v, Berlin: %v, YOLO v3: %v, CatalystBlock: %v, London: %v, ArrowGlacier: %v, MergeFork:%v, Euler: %v, Gibbs: %v, Nano: %v, Moran: %v, Planck: %v,Luban: %v, Plato: %v, Hertz: %v, Hertzfix: %v, ShanghaiTime: %v, KeplerTime: %v, FeynmanTime: %v, FeynmanFixTime: %v, CancunTime: %v, HaberTime: %v, HaberFixTime: %v, BohrTime: %v, PauliTime: %v, Engine: %v}",
 		c.ChainID,
 		c.HomesteadBlock,
 		c.DAOForkBlock,
@@ -677,6 +692,7 @@ func (c *ChainConfig) String() string {
 		HaberTime,
 		HaberFixTime,
 		BohrTime,
+		PauliTime,
 		engine,
 	)
 }
@@ -977,6 +993,20 @@ func (c *ChainConfig) IsOnBohr(currentBlockNumber *big.Int, lastBlockTime uint64
 	return !c.IsBohr(lastBlockNumber, lastBlockTime) && c.IsBohr(currentBlockNumber, currentBlockTime)
 }
 
+// IsPauli returns whether time is either equal to the Pauli fork time or greater.
+func (c *ChainConfig) IsPauli(num *big.Int, time uint64) bool {
+	return c.IsLondon(num) && isTimestampForked(c.PauliTime, time)
+}
+
+// IsOnPauli returns whether currentBlockTime is either equal to the Pauli fork time or greater firstly.
+func (c *ChainConfig) IsOnPauli(currentBlockNumber *big.Int, lastBlockTime uint64, currentBlockTime uint64) bool {
+	lastBlockNumber := new(big.Int)
+	if currentBlockNumber.Cmp(big.NewInt(1)) >= 0 {
+		lastBlockNumber.Sub(currentBlockNumber, big.NewInt(1))
+	}
+	return !c.IsPauli(lastBlockNumber, lastBlockTime) && c.IsPauli(currentBlockNumber, currentBlockTime)
+}
+
 // IsPrague returns whether num is either equal to the Prague fork time or greater.
 func (c *ChainConfig) IsPrague(num *big.Int, time uint64) bool {
 	return c.IsLondon(num) && isTimestampForked(c.PragueTime, time)
@@ -1043,6 +1073,7 @@ func (c *ChainConfig) CheckConfigForkOrder() error {
 		{name: "haberTime", timestamp: c.HaberTime},
 		{name: "haberFixTime", timestamp: c.HaberFixTime},
 		{name: "bohrTime", timestamp: c.BohrTime},
+		{name: "pauliTime", timestamp: c.PauliTime},
 		{name: "pragueTime", timestamp: c.PragueTime, optional: true},
 		{name: "verkleTime", timestamp: c.VerkleTime, optional: true},
 	} {
@@ -1198,6 +1229,9 @@ func (c *ChainConfig) checkCompatible(newcfg *ChainConfig, headNumber *big.Int, 
 	}
 	if isForkTimestampIncompatible(c.BohrTime, newcfg.BohrTime, headTimestamp) {
 		return newTimestampCompatError("Bohr fork timestamp", c.BohrTime, newcfg.BohrTime)
+	}
+	if isForkTimestampIncompatible(c.PauliTime, newcfg.PauliTime, headTimestamp) {
+		return newTimestampCompatError("Puali fork timestamp", c.PauliTime, newcfg.PauliTime)
 	}
 	if isForkTimestampIncompatible(c.PragueTime, newcfg.PragueTime, headTimestamp) {
 		return newTimestampCompatError("Prague fork timestamp", c.PragueTime, newcfg.PragueTime)
@@ -1382,7 +1416,7 @@ type Rules struct {
 	IsHertz                                                 bool
 	IsHertzfix                                              bool
 	IsShanghai, IsKepler, IsFeynman, IsCancun, IsHaber      bool
-	IsBohr, IsPrague, IsVerkle                              bool
+	IsBohr, IsPauli, IsPrague, IsVerkle                     bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -1419,6 +1453,7 @@ func (c *ChainConfig) Rules(num *big.Int, isMerge bool, timestamp uint64) Rules 
 		IsCancun:         c.IsCancun(num, timestamp),
 		IsHaber:          c.IsHaber(num, timestamp),
 		IsBohr:           c.IsBohr(num, timestamp),
+		IsPauli:          c.IsPauli(num, timestamp),
 		IsPrague:         c.IsPrague(num, timestamp),
 		IsVerkle:         c.IsVerkle(num, timestamp),
 	}

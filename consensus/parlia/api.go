@@ -77,7 +77,7 @@ func (api *API) GetValidatorsAtHash(hash common.Hash) ([]common.Address, error) 
 
 func (api *API) GetJustifiedNumber(number *rpc.BlockNumber) (uint64, error) {
 	header := api.getHeader(number)
-	// Ensure we have an actually valid block and return the validators from its snapshot
+	// Ensure we have an actually valid block and return the justifiedNumber from its snapshot
 	if header == nil {
 		return 0, errUnknownBlock
 	}
@@ -90,7 +90,7 @@ func (api *API) GetJustifiedNumber(number *rpc.BlockNumber) (uint64, error) {
 
 func (api *API) GetTurnLength(number *rpc.BlockNumber) (uint8, error) {
 	header := api.getHeader(number)
-	// Ensure we have an actually valid block and return the validators from its snapshot
+	// Ensure we have an actually valid block and return the turnLength from its snapshot
 	if header == nil {
 		return 0, errUnknownBlock
 	}
@@ -101,9 +101,17 @@ func (api *API) GetTurnLength(number *rpc.BlockNumber) (uint8, error) {
 	return snap.TurnLength, nil
 }
 
+func (api *API) GetVoteInterval(number *rpc.BlockNumber) (uint64, error) {
+	header := api.getHeader(number)
+	if header == nil {
+		return 0, errUnknownBlock
+	}
+	return api.parlia.VoteInterval(api.chain, header), nil
+}
+
 func (api *API) GetFinalizedNumber(number *rpc.BlockNumber) (uint64, error) {
 	header := api.getHeader(number)
-	// Ensure we have an actually valid block and return the validators from its snapshot
+	// Ensure we have an actually valid block and return the finalizedNumber from its snapshot
 	if header == nil {
 		return 0, errUnknownBlock
 	}

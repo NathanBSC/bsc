@@ -148,10 +148,16 @@ func (voteManager *VoteManager) loop() {
 			}
 
 			curHead := cHead.Header
+			voteInterval := uint64(1)
 			if p, ok := voteManager.engine.(*parlia.Parlia); ok {
-				nextBlockMinedTime := time.Unix(int64((curHead.Time + p.Period())), 0)
+				voteInterval = p.VoteInterval(voteManager.chain, nil)
+				if curHead.Number.Uint64()%voteInterval != 0 {
+					log.Debug("skip voting for aligning with the voting interval", "Number", curHead.Number.Uint64(), "voteInterval", voteInterval)
+					continue
+				}
+				nextVotableBlockMinedTime := time.Unix(int64((curHead.Time + p.Period()*voteInterval)), 0)
 				timeForBroadcast := 50 * time.Millisecond // enough to broadcast a vote
-				if time.Now().Add(timeForBroadcast).After(nextBlockMinedTime) {
+				if time.Now().Add(timeForBroadcast).After(nextVotableBlockMinedTime) {
 					log.Warn("too late to vote", "Head.Time(Second)", curHead.Time, "Now(Millisecond)", time.Now().UnixMilli())
 					continue
 				}
@@ -213,7 +219,7 @@ func (voteManager *VoteManager) loop() {
 			// check the latest justified block, which indicating the stability of the network
 			curJustifiedNumber, _, err := voteManager.engine.GetJustifiedNumberAndHash(voteManager.chain, []*types.Header{curHead})
 			if err == nil && curJustifiedNumber != 0 {
-				if curJustifiedNumber+1 != curHead.Number.Uint64() {
+				if curJustifiedNumber+voteInterval != curHead.Number.Uint64() {
 					log.Debug("not justified", "blockNumber", curHead.Number.Uint64()-1)
 					notJustified.Inc(1)
 				} else {
@@ -228,7 +234,7 @@ func (voteManager *VoteManager) loop() {
 
 						lastJustifiedNumber, _, err := voteManager.engine.GetJustifiedNumberAndHash(voteManager.chain, []*types.Header{parent})
 						if err == nil {
-							if lastJustifiedNumber == 0 || lastJustifiedNumber+1 == curJustifiedNumber {
+							if lastJustifiedNumber == 0 || lastJustifiedNumber+voteInterval == curJustifiedNumber {
 								continuousJustified.Inc(1)
 							} else {
 								log.Debug("not continuous block justified", "lastJustified", lastJustifiedNumber, "curJustified", curJustifiedNumber)
@@ -238,7 +244,6 @@ func (voteManager *VoteManager) loop() {
 					}
 				}
 			}
-
 		case event := <-voteManager.syncVoteCh:
 			voteMessage := event.Vote
 			if voteManager.eth.IsMining() || !bytes.Equal(voteManager.signer.PubKey[:], voteMessage.VoteAddress[:]) {

@@ -199,6 +199,10 @@ func New(stack *node.Node, config *ethconfig.Config) (*Ethereum, error) {
 		chainConfig.BohrTime = config.OverrideBohr
 		overrides.OverrideBohr = config.OverrideBohr
 	}
+	if config.OverrideBohr != nil {
+		chainConfig.PauliTime = config.OverridePauli
+		overrides.OverridePauli = config.OverridePauli
+	}
 	if config.OverrideVerkle != nil {
 		chainConfig.VerkleTime = config.OverrideVerkle
 		overrides.OverrideVerkle = config.OverrideVerkle

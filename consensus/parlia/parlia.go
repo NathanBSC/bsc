@@ -82,7 +82,6 @@ var (
 	// 100 native token
 	maxSystemBalance                  = new(uint256.Int).Mul(uint256.NewInt(100), uint256.NewInt(params.Ether))
 	verifyVoteAttestationErrorCounter = metrics.NewRegisteredCounter("parlia/verifyVoteAttestation/error", nil)
-	updateAttestationErrorCounter     = metrics.NewRegisteredCounter("parlia/updateAttestation/error", nil)
 	validVotesfromSelfCounter         = metrics.NewRegisteredCounter("parlia/VerifyVote/self", nil)
 	doubleSignCounter                 = metrics.NewRegisteredCounter("parlia/doublesign", nil)
 
@@ -318,6 +317,14 @@ func New(
 	return c
 }
 
+func (p *Parlia) VoteInterval(chain consensus.ChainHeaderReader, header *types.Header) uint64 {
+	if header != nil {
+		return p.config.VoteInterval(p.chainConfig, header.Number, header.Time)
+	}
+	currentBlock := chain.CurrentHeader()
+	return p.config.VoteInterval(p.chainConfig, currentBlock.Number, currentBlock.Time)
+}
+
 func (p *Parlia) Period() uint64 {
 	return p.config.Period
 }
@@ -467,6 +474,10 @@ func (p *Parlia) verifyVoteAttestation(chain consensus.ChainHeaderReader, header
 	if attestation == nil {
 		return nil
 	}
+	voteInterval := p.VoteInterval(chain, nil)
+	if header.Number.Uint64()%voteInterval != 0 {
+		return errors.New("invalid attestation, nil expected to align with the voting interval.")
+	}
 	if attestation.Data == nil {
 		return errors.New("invalid attestation, vote data is nil")
 	}
@@ -474,24 +485,27 @@ func (p *Parlia) verifyVoteAttestation(chain consensus.ChainHeaderReader, header
 		return fmt.Errorf("invalid attestation, too large extra length: %d", len(attestation.Extra))
 	}
 
-	// Get parent block
-	parent, err := p.getParent(chain, header, parents)
-	if err != nil {
-		return err
+	// Get target block
+	targetBlock := header
+	for i := voteInterval; i > 0; i-- {
+		targetBlock = chain.GetHeaderByHash(targetBlock.ParentHash)
+		if targetBlock == nil {
+			return errors.New("parent not found")
+		}
 	}
 
 	// The target block should be direct parent.
 	targetNumber := attestation.Data.TargetNumber
 	targetHash := attestation.Data.TargetHash
-	if targetNumber != parent.Number.Uint64() || targetHash != parent.Hash() {
+	if targetNumber != targetBlock.Number.Uint64() || targetHash != targetBlock.Hash() {
 		return fmt.Errorf("invalid attestation, target mismatch, expected block: %d, hash: %s; real block: %d, hash: %s",
-			parent.Number.Uint64(), parent.Hash(), targetNumber, targetHash)
+			targetBlock.Number.Uint64(), targetBlock.Hash(), targetNumber, targetHash)
 	}
 
 	// The source block should be the highest justified block.
 	sourceNumber := attestation.Data.SourceNumber
 	sourceHash := attestation.Data.SourceHash
-	headers := []*types.Header{parent}
+	headers := []*types.Header{targetBlock}
 	if len(parents) > 0 {
 		headers = parents
 	}
@@ -510,7 +524,7 @@ func (p *Parlia) verifyVoteAttestation(chain consensus.ChainHeaderReader, header
 	} else {
 		parents = nil
 	}
-	snap, err := p.snapshot(chain, parent.Number.Uint64()-1, parent.ParentHash, parents)
+	snap, err := p.snapshot(chain, targetBlock.Number.Uint64()-1, targetBlock.ParentHash, parents)
 	if err != nil {
 		return err
 	}
@@ -964,7 +978,8 @@ func (p *Parlia) prepareTurnLength(chain consensus.ChainHeaderReader, header *ty
 }
 
 func (p *Parlia) assembleVoteAttestation(chain consensus.ChainHeaderReader, header *types.Header) error {
-	if !p.chainConfig.IsLuban(header.Number) || header.Number.Uint64() < 2 {
+	voteInterval := p.VoteInterval(chain, nil)
+	if !p.chainConfig.IsLuban(header.Number) || header.Number.Uint64() < 2 || header.Number.Uint64()%voteInterval != 0 {
 		return nil
 	}
 
@@ -972,23 +987,26 @@ func (p *Parlia) assembleVoteAttestation(chain consensus.ChainHeaderReader, head
 		return nil
 	}
 
-	// Fetch direct parent's votes
-	parent := chain.GetHeaderByHash(header.ParentHash)
-	if parent == nil {
-		return errors.New("parent not found")
+	// Fetch votes
+	targetBlock := header
+	for i := voteInterval; i > 0; i-- {
+		targetBlock = chain.GetHeaderByHash(targetBlock.ParentHash)
+		if targetBlock == nil {
+			return errors.New("parent not found")
+		}
 	}
-	snap, err := p.snapshot(chain, parent.Number.Uint64()-1, parent.ParentHash, nil)
+	snap, err := p.snapshot(chain, targetBlock.Number.Uint64()-1, targetBlock.ParentHash, nil)
 	if err != nil {
 		return err
 	}
-	votes := p.VotePool.FetchVoteByBlockHash(parent.Hash())
+	votes := p.VotePool.FetchVoteByBlockHash(targetBlock.Hash())
 	if len(votes) < cmath.CeilDiv(len(snap.Validators)*2, 3) {
 		return nil
 	}
 
 	// Prepare vote attestation
 	// Prepare vote data
-	justifiedBlockNumber, justifiedBlockHash, err := p.GetJustifiedNumberAndHash(chain, []*types.Header{parent})
+	justifiedBlockNumber, justifiedBlockHash, err := p.GetJustifiedNumberAndHash(chain, []*types.Header{targetBlock})
 	if err != nil {
 		return errors.New("unexpected error when getting the highest justified number and hash")
 	}
@@ -996,8 +1014,8 @@ func (p *Parlia) assembleVoteAttestation(chain consensus.ChainHeaderReader, head
 		Data: &types.VoteData{
 			SourceNumber: justifiedBlockNumber,
 			SourceHash:   justifiedBlockHash,
-			TargetNumber: parent.Number.Uint64(),
-			TargetHash:   parent.Hash(),
+			TargetNumber: targetBlock.Number.Uint64(),
+			TargetHash:   targetBlock.Hash(),
 		},
 	}
 	// Check vote data from votes
@@ -1540,9 +1558,9 @@ func (p *Parlia) Delay(chain consensus.ChainReader, header *types.Header, leftOv
 	}
 
 	// The blocking time should be no more than half of period when snap.TurnLength == 1
-	timeForMining := time.Duration(p.config.Period) * time.Second / 2
-	if !snap.lastBlockInOneTurn(header.Number.Uint64()) {
-		timeForMining = time.Duration(p.config.Period) * time.Second * 2 / 3
+	timeForMining := time.Duration(p.config.Period) * time.Second
+	if snap.lastBlockInOneTurn(header.Number.Uint64()) {
+		timeForMining = time.Duration(p.config.Period) * time.Second / 2
 	}
 	if delay > timeForMining {
 		delay = timeForMining

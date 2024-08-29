@@ -81,6 +81,7 @@ var (
 		utils.OverrideDefaultExtraReserveForBlobRequests,
 		utils.OverrideBreatheBlockInterval,
 		utils.OverrideFixedTurnLength,
+		utils.OverrideFixedVoteInterval,
 		utils.EnablePersonal,
 		utils.TxPoolLocalsFlag,
 		utils.TxPoolNoLocalsFlag,

@@ -101,12 +101,16 @@ func (api *API) GetTurnLength(number *rpc.BlockNumber) (uint8, error) {
 	return snap.TurnLength, nil
 }
 
-func (api *API) GetVoteInterval(number *rpc.BlockNumber) (uint64, error) {
+func (api *API) GetVoteInterval(number *rpc.BlockNumber) (uint8, error) {
 	header := api.getHeader(number)
 	if header == nil {
 		return 0, errUnknownBlock
 	}
-	return api.parlia.VoteInterval(api.chain, header), nil
+	snap, err := api.parlia.snapshot(api.chain, header.Number.Uint64(), header.Hash(), nil)
+	if err != nil || snap.VoteInterval == 0 {
+		return 0, err
+	}
+	return snap.VoteInterval, nil
 }
 
 func (api *API) GetFinalizedNumber(number *rpc.BlockNumber) (uint64, error) {

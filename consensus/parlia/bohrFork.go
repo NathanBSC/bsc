@@ -89,3 +89,35 @@ func (p *Parlia) getRandTurnLength(header *types.Header) (turnLength *big.Int, e
 	lengthIndex := int(r.Int31n(int32(len(turnLengths))))
 	return big.NewInt(int64(turnLengths[lengthIndex])), nil
 }
+
+func (p *Parlia) getVoteInterval(chain consensus.ChainHeaderReader, header *types.Header) (*uint8, error) {
+	parent := chain.GetHeaderByHash(header.ParentHash)
+	if parent == nil {
+		return nil, errors.New("parent not found")
+	}
+
+	var voteInterval uint8
+	if p.chainConfig.IsBohr(parent.Number, parent.Time) {
+		voteIntervalFromContract, err := p.getVoteIntervalFromContract(parent)
+		if err != nil {
+			return nil, err
+		}
+		if voteIntervalFromContract == nil {
+			return nil, errors.New("unexpected error when getVoteIntervalFromContract")
+		}
+		voteInterval = uint8(voteIntervalFromContract.Int64())
+	} else {
+		voteInterval = defaultVoteInterval
+	}
+	log.Debug("getVoteInterval", "voteInterval", voteInterval)
+
+	return &voteInterval, nil
+}
+
+func (p *Parlia) getVoteIntervalFromContract(header *types.Header) (voteInterval *big.Int, err error) {
+	// mock to get voteInterval from the contract
+	if params.FixedVoteInterval >= 1 && params.FixedVoteInterval <= 3 {
+		return big.NewInt(int64(params.FixedVoteInterval)), nil
+	}
+	return big.NewInt(int64(defaultVoteInterval)), nil
+}

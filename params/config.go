@@ -574,15 +574,6 @@ type ParliaConfig struct {
 	Epoch  uint64 `json:"epoch"`  // Epoch length to update validatorSet
 }
 
-// VoteInterval returns the voting interval based on the block number and timestamp.
-func (p *ParliaConfig) VoteInterval(chainConfig *ChainConfig, num *big.Int, time uint64) uint64 {
-	if chainConfig.IsPauli(num, time) {
-		return 2
-	} else {
-		return 1
-	}
-}
-
 // String implements the stringer interface, returning the consensus engine details.
 func (b *ParliaConfig) String() string {
 	return "parlia"

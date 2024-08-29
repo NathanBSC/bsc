@@ -148,14 +148,18 @@ func (voteManager *VoteManager) loop() {
 			}
 
 			curHead := cHead.Header
-			voteInterval := uint64(1)
+			voteInterval := uint64(1) // equal to parlia.defaultVoteInterval
 			if p, ok := voteManager.engine.(*parlia.Parlia); ok {
-				voteInterval = p.VoteInterval(voteManager.chain, nil)
-				if curHead.Number.Uint64()%voteInterval != 0 {
+				voteInterval, err := p.VoteInterval(voteManager.chain, nil)
+				if err != nil {
+					log.Debug("fail to vote", "err", err)
+					continue
+				}
+				if curHead.Number.Uint64()%uint64(voteInterval) != 0 {
 					log.Debug("skip voting for aligning with the voting interval", "Number", curHead.Number.Uint64(), "voteInterval", voteInterval)
 					continue
 				}
-				nextVotableBlockMinedTime := time.Unix(int64((curHead.Time + p.Period()*voteInterval)), 0)
+				nextVotableBlockMinedTime := time.Unix(int64((curHead.Time + p.Period()*uint64(voteInterval))), 0)
 				timeForBroadcast := 50 * time.Millisecond // enough to broadcast a vote
 				if time.Now().Add(timeForBroadcast).After(nextVotableBlockMinedTime) {
 					log.Warn("too late to vote", "Head.Time(Second)", curHead.Time, "Now(Millisecond)", time.Now().UnixMilli())

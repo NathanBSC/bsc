@@ -21,7 +21,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"sort"
 
@@ -44,6 +43,7 @@ type Snapshot struct {
 
 	Number           uint64                            `json:"number"`                // Block number where the snapshot was created
 	Hash             common.Hash                       `json:"hash"`                  // Block hash where the snapshot was created
+	VoteInterval     uint8                             `json:"vote_interval"`         // Number of blocks between two voting rounds for Fast Finality
 	TurnLength       uint8                             `json:"turn_length"`           // Length of `turn`, meaning the consecutive number of blocks a validator receives priority for block production
 	Validators       map[common.Address]*ValidatorInfo `json:"validators"`            // Set of authorized validators at this moment
 	Recents          map[uint64]common.Address         `json:"recents"`               // Set of recent validators for spam protections
@@ -74,6 +74,7 @@ func newSnapshot(
 		sigCache:         sigCache,
 		Number:           number,
 		Hash:             hash,
+		VoteInterval:     defaultVoteInterval,
 		TurnLength:       defaultTurnLength,
 		Recents:          make(map[uint64]common.Address),
 		RecentForkHashes: make(map[uint64]string),
@@ -117,6 +118,9 @@ func loadSnapshot(config *params.ParliaConfig, sigCache *lru.ARCCache, db ethdb.
 	if err := json.Unmarshal(blob, snap); err != nil {
 		return nil, err
 	}
+	if snap.VoteInterval == 0 { // no VoteInterval field in old snapshots
+		snap.VoteInterval = defaultVoteInterval
+	}
 	if snap.TurnLength == 0 { // no TurnLength field in old snapshots
 		snap.TurnLength = defaultTurnLength
 	}
@@ -145,6 +149,7 @@ func (s *Snapshot) copy() *Snapshot {
 		sigCache:         s.sigCache,
 		Number:           s.Number,
 		Hash:             s.Hash,
+		VoteInterval:     s.VoteInterval,
 		TurnLength:       s.TurnLength,
 		Validators:       make(map[common.Address]*ValidatorInfo),
 		Recents:          make(map[uint64]common.Address),
@@ -184,25 +189,10 @@ func (s *Snapshot) isMajorityFork(forkHash string) bool {
 	return ally > len(s.RecentForkHashes)/2
 }
 
-func (s *Snapshot) updateAttestation(header *types.Header, chainConfig *params.ChainConfig, parliaConfig *params.ParliaConfig) {
-	if !chainConfig.IsLuban(header.Number) {
-		return
-	}
-
+func (s *Snapshot) updateAttestation(header *types.Header, chain consensus.ChainHeaderReader, chainConfig *params.ChainConfig, parliaConfig *params.ParliaConfig) {
 	// The attestation should have been checked in verify header, update directly
 	attestation, _ := getVoteAttestationFromHeader(header, chainConfig, parliaConfig)
 	if attestation == nil {
-		return
-	}
-
-	// Headers with bad attestation are accepted before Plato upgrade,
-	// but Attestation of snapshot is only updated when the target block is direct parent of the header
-	targetNumber := attestation.Data.TargetNumber
-	targetHash := attestation.Data.TargetHash
-	if targetHash != header.ParentHash || targetNumber+1 != header.Number.Uint64() {
-		log.Warn("updateAttestation failed", "error", fmt.Errorf("invalid attestation, target mismatch, expected block: %d, hash: %s; real block: %d, hash: %s",
-			header.Number.Uint64()-1, header.ParentHash, targetNumber, targetHash))
-		updateAttestationErrorCounter.Inc(1)
 		return
 	}
 
@@ -210,7 +200,8 @@ func (s *Snapshot) updateAttestation(header *types.Header, chainConfig *params.C
 	// Two scenarios for s.Attestation being nil:
 	// 1) The first attestation is assembled.
 	// 2) The snapshot on disk is missing, prompting the creation of a new snapshot using `newSnapshot`.
-	if s.Attestation != nil && attestation.Data.SourceNumber+1 != attestation.Data.TargetNumber {
+	lastVoteInterval := s.VoteInterval // use the value before the switch at each validator set change block
+	if s.Attestation != nil && attestation.Data.SourceNumber+uint64(lastVoteInterval) != attestation.Data.TargetNumber {
 		s.Attestation.TargetNumber = attestation.Data.TargetNumber
 		s.Attestation.TargetHash = attestation.Data.TargetHash
 	} else {
@@ -310,7 +301,7 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 		}
 		snap.Recents[number] = validator
 		snap.RecentForkHashes[number] = hex.EncodeToString(header.Extra[extraVanity-nextForkHashSize : extraVanity])
-		snap.updateAttestation(header, chainConfig, s.config)
+		snap.updateAttestation(header, chain, chainConfig, s.config)
 		// change validator set
 		if number > 0 && number%s.config.Epoch == snap.minerHistoryCheckLen() {
 			epochKey := math.MaxUint64 - header.Number.Uint64()/s.config.Epoch // impossible used as a block number
@@ -325,6 +316,16 @@ func (s *Snapshot) apply(headers []*types.Header, chain consensus.ChainHeaderRea
 			checkpointHeader := FindAncientHeader(header, snap.minerHistoryCheckLen(), chain, parents)
 			if checkpointHeader == nil {
 				return nil, consensus.ErrUnknownAncestor
+			}
+
+			// get voteInterval from headers and use that for new voteInterval
+			voteInterval, err := parseVoteInterval(checkpointHeader, chainConfig, s.config)
+			if err != nil {
+				return nil, err
+			}
+			if voteInterval != nil {
+				snap.VoteInterval = *voteInterval
+				log.Debug("validator set switch", "voteInterval", *voteInterval)
 			}
 
 			oldVersionsLen := snap.versionHistoryCheckLen()
@@ -486,6 +487,25 @@ func parseTurnLength(header *types.Header, chainConfig *params.ChainConfig, parl
 	}
 	turnLength := header.Extra[pos]
 	return &turnLength, nil
+}
+
+func parseVoteInterval(header *types.Header, chainConfig *params.ChainConfig, parliaConfig *params.ParliaConfig) (*uint8, error) {
+	if header.Number.Uint64()%parliaConfig.Epoch != 0 {
+		return nil, nil
+	}
+
+	var voteInterval uint8
+	if !chainConfig.IsPauli(header.Number, header.Time) {
+		voteInterval = defaultVoteInterval
+	} else {
+		if len(header.Extra) <= extraVanity+extraSeal {
+			return nil, errInvalidSpanValidators
+		}
+		pos := extraVanity - nextForkHashSize - voteIntervalSize
+		voteInterval = header.Extra[pos]
+	}
+
+	return &voteInterval, nil
 }
 
 func FindAncientHeader(header *types.Header, ite uint64, chain consensus.ChainHeaderReader, candidateParents []*types.Header) *types.Header {

@@ -315,6 +315,11 @@ var (
 		Usage:    "Manually specify the Bohr fork timestamp, overriding the bundled setting",
 		Category: flags.EthCategory,
 	}
+	OverridePauli = &cli.Uint64Flag{
+		Name:     "override.pauli",
+		Usage:    "Manually specify the Pauli fork timestamp, overriding the bundled setting",
+		Category: flags.EthCategory,
+	}
 	OverrideVerkle = &cli.Uint64Flag{
 		Name:     "override.verkle",
 		Usage:    "Manually specify the Verkle fork timestamp, overriding the bundled setting",
@@ -348,6 +353,12 @@ var (
 		Name:     "override.fixedturnlength",
 		Usage:    "It use fixed or random values for turn length instead of reading from the contract, only for testing purpose",
 		Value:    params.FixedTurnLength,
+		Category: flags.EthCategory,
+	}
+	OverrideFixedVoteInterval = &cli.Uint64Flag{
+		Name:     "override.fixedvoteinterval",
+		Usage:    "It use fixed values for voting interval, only for testing purpose",
+		Value:    params.FixedVoteInterval,
 		Category: flags.EthCategory,
 	}
 	SyncModeFlag = &flags.TextMarshalerFlag{
